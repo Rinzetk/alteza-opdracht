@@ -217,7 +217,7 @@ GitHub Actions (`.github/workflows/ci.yml`) draait bij elke push en pull request
 - [x] Foutafhandeling
 - [x] Rate limiting en retries
 - [x] Caching
-- [ ] CLI
+- [x] CLI
 - [ ] Integratietests
 - [ ] Docker
 - [ ] Documentatie en afronding
