@@ -201,7 +201,7 @@ def test_api_errors_exit_with_code_1_and_a_message_on_stderr(capsys, status, hea
 
     output = capsys.readouterr()
     assert output.out == ""
-    assert output.err.startswith("gh-commits: error: ")
+    assert output.err.startswith("github-commits: error: ")
     assert expected in output.err
 
 
@@ -268,10 +268,10 @@ def test_token_is_sent_but_never_printed(monkeypatch, capsys):
 
 
 def test_runs_as_module(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["gh-commits", "--help"])
+    monkeypatch.setattr(sys, "argv", ["github-commits", "--help"])
 
     with pytest.raises(SystemExit) as caught:
         runpy.run_module("gh_commits", run_name="__main__")
 
     assert caught.value.code == 0
-    assert "usage: gh-commits" in capsys.readouterr().out
+    assert "usage: github-commits" in capsys.readouterr().out

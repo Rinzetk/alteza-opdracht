@@ -3,7 +3,7 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gh-commits"
+name = "github-commits"
 version = "0.1.0"
 description = "CLI die commits van een GitHub-repository ophaalt en groepeert per auteur."
 readme = "README.md"
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-gh-commits = "gh_commits.cli:main"
+github-commits = "gh_commits.cli:main"
 
 [project.optional-dependencies]
 dev = [

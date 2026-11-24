@@ -21,7 +21,7 @@ EXIT_OK = 0
 EXIT_API_ERROR = 1
 EXIT_INVALID_INPUT = 2
 DATE_FORMAT = "%Y-%m-%d"
-PROG = "gh-commits"
+PROG = "github-commits"
 
 
 def _parse_date(value: str) -> date:

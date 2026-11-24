@@ -15,7 +15,7 @@ from gh_commits.client import mount_retries
 
 CACHE_DIR_VARIABLE = "GH_COMMITS_CACHE_PATH"
 CACHE_TTL_VARIABLE = "GH_COMMITS_CACHE_TTL"
-DEFAULT_CACHE_DIR = Path("~/.cache/gh-commits")
+DEFAULT_CACHE_DIR = Path("~/.cache/github-commits")
 DEFAULT_EXPIRE_AFTER_SECONDS = 3600
 CACHE_FILE_NAME = "http_cache.sqlite"
 

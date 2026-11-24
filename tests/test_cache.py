@@ -121,7 +121,7 @@ def test_session_retries_transient_failures(session):
 def test_cache_dir_defaults_to_user_cache(monkeypatch):
     monkeypatch.delenv("GH_COMMITS_CACHE_PATH", raising=False)
 
-    assert cache_dir_from_env() == Path.home() / ".cache" / "gh-commits"
+    assert cache_dir_from_env() == Path.home() / ".cache" / "github-commits"
 
 
 def test_cache_dir_from_environment(monkeypatch, tmp_path):

@@ -199,4 +199,4 @@ def test_error_on_a_later_page_prints_no_partial_result(capsys):
 
     output = capsys.readouterr()
     assert output.out == ""
-    assert output.err == "gh-commits: error: GitHub returned HTTP 500 Internal Server Error.\n"
+    assert output.err == "github-commits: error: GitHub returned HTTP 500 Internal Server Error.\n"

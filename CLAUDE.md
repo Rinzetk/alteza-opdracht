@@ -30,7 +30,7 @@ Deze regels worden ook afgedwongen in `.claude/settings.json`.
 
 ## Project
 
-`gh-commits`: een CLI die via de GitHub REST API de commits van een publieke repository
+`github-commits`: een CLI die via de GitHub REST API de commits van een publieke repository
 ophaalt binnen een tijdsbestek en ze groepeert per auteur. Zie `README.md` voor de
 functionaliteit, de architectuur en de roadmap.
 
