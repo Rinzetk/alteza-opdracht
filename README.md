@@ -179,12 +179,19 @@ pip install -e ".[dev]"
 ### Tests
 
 ```bash
-pytest                      # unit- en integratietests (met gemockte HTTP)
-pytest -m integration       # live tests tegen de GitHub API (vereist GITHUB_TOKEN)
-pytest --cov=gh_commits     # met coverage
+pytest                      # alle tests; de live tests alleen als GITHUB_TOKEN gezet is
+pytest -m integration       # alleen de live tests tegen de GitHub API (vereist GITHUB_TOKEN)
+pytest -m "not integration" # alles behalve de live tests
+pytest --cov                # met coverage
 ```
 
-In de unittests worden HTTP-calls gemockt met `responses`. De integratietests draaien de volledige CLI end-to-end. Live tests zijn gemarkeerd met `@pytest.mark.integration` en worden overgeslagen als er geen token is.
+Er zijn drie soorten tests:
+
+| Soort | Bestanden | Wat ze testen |
+| --- | --- | --- |
+| Unittests | `test_grouping.py`, `test_client.py`, `test_cache.py`, `test_cli.py` | Elke laag apart; HTTP-calls worden gemockt met `responses` |
+| End-to-end | `test_end_to_end.py` | `main([...])` door alle lagen heen (CLI, cache, client, paginatie, groeperen, output), met alleen de GitHub API gemockt: stdout, stderr en exit codes |
+| Live | `test_live.py` | De CLI tegen de echte API, op de vaste geschiedenis van `octocat/Hello-World`; gemarkeerd met `@pytest.mark.integration` en overgeslagen zonder `GITHUB_TOKEN` |
 
 Met Docker:
 
@@ -204,7 +211,7 @@ pylint src
 GitHub Actions (`.github/workflows/ci.yml`) draait bij elke push en pull request:
 
 1. Linting met flake8 en pylint
-2. Tests met coverage
+2. Tests met coverage, inclusief de live tests (met het automatische `secrets.GITHUB_TOKEN`); het coverage-rapport staat in de samenvatting van elke run
 3. Bouwen van het Docker-image
 
 ## Roadmap
@@ -218,6 +225,6 @@ GitHub Actions (`.github/workflows/ci.yml`) draait bij elke push en pull request
 - [x] Rate limiting en retries
 - [x] Caching
 - [x] CLI
-- [ ] Integratietests
+- [x] Integratietests
 - [ ] Docker
 - [ ] Documentatie en afronding
