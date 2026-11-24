@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gh-commits"
+version = "0.1.0"
+description = "CLI die commits van een GitHub-repository ophaalt en groepeert per auteur."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.32",
+    "requests-cache>=1.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "responses>=0.25",
+    "flake8>=7.0",
+    "flake8-pyproject>=1.2",
+    "pylint>=3.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: live tests tegen de GitHub API (vereist GITHUB_TOKEN)",
+]
+
+[tool.coverage.run]
+source = ["gh_commits"]
+branch = true
+
+[tool.flake8]
+max-line-length = 100
+exclude = [".git", ".venv", "__pycache__", "build", "dist"]
+
+[tool.pylint.main]
+py-version = "3.12"
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint."messages control"]
+disable = ["missing-module-docstring"]
