@@ -209,12 +209,12 @@ GitHub Actions (`.github/workflows/ci.yml`) draait bij elke push en pull request
 
 ## Roadmap
 
-- [ ] Projectskelet, tooling en `pyproject.toml`
-- [ ] CI-pipeline (linting + tests)
-- [ ] Domeinmodellen en groepeerlogica
-- [ ] Basis-API-client
-- [ ] Paginatie, datumbereik en branch
-- [ ] Foutafhandeling
+- [x] Projectskelet, tooling en `pyproject.toml`
+- [x] CI-pipeline (linting + tests)
+- [x] Domeinmodellen en groepeerlogica
+- [x] Basis-API-client
+- [x] Paginatie, datumbereik en branch
+- [x] Foutafhandeling
 - [ ] Rate limiting en retries
 - [ ] Caching
 - [ ] CLI

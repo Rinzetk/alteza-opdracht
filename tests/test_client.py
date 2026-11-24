@@ -8,9 +8,19 @@ import responses
 from responses import matchers
 
 from gh_commits.client import GitHubClient, read_token
+from gh_commits.errors import (
+    AuthenticationError,
+    BranchNotFoundError,
+    GitHubError,
+    InvalidRepositoryNameError,
+    NetworkError,
+    RateLimitError,
+    RepositoryNotFoundError,
+)
 from gh_commits.models import Commit
 
-COMMITS_URL = "https://api.github.com/repos/octo/hello/commits"
+REPO_URL = "https://api.github.com/repos/octo/hello"
+COMMITS_URL = f"{REPO_URL}/commits"
 SINCE = date(2026, 1, 1)
 UNTIL = date(2026, 1, 31)
 FIRST_PAGE_QUERY = {
@@ -196,6 +206,180 @@ def test_uses_the_injected_session():
     list(GitHubClient(session).iter_commits("octo/hello", SINCE, UNTIL))
 
     assert responses.calls[0].request.headers["X-Test"] == "injected"
+
+
+@pytest.mark.parametrize("repo", [
+    "octo/hello",
+    "octo-org/hello.world",
+    "Octo123/hello_world-2",
+])
+@responses.activate
+def test_valid_repository_names_are_accepted(client, repo):
+    responses.get(f"https://api.github.com/repos/{repo}/commits", json=[])
+
+    assert not list(client.iter_commits(repo, SINCE, UNTIL))
+
+
+@pytest.mark.parametrize("repo", [
+    "",
+    "hello",
+    "octo/",
+    "/hello",
+    "octo/hello/extra",
+    "octo hello/repo",
+    "octo_org/hello",
+    "octo/hel lo",
+    "octo/.",
+    "octo/..",
+    "o" * 40 + "/hello",
+])
+@responses.activate
+def test_invalid_repository_name_raises_before_any_request(client, repo):
+    with pytest.raises(InvalidRepositoryNameError):
+        client.iter_commits(repo, SINCE, UNTIL)
+
+    assert not responses.calls
+
+
+def test_invalid_repository_name_is_not_an_api_error():
+    assert not issubclass(InvalidRepositoryNameError, GitHubError)
+    assert issubclass(InvalidRepositoryNameError, ValueError)
+
+
+@responses.activate
+def test_unauthorized_raises_authentication_error(client):
+    responses.get(COMMITS_URL, status=401, json={"message": "Bad credentials"})
+
+    with pytest.raises(AuthenticationError) as caught:
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert caught.value.status_code == 401
+
+
+@responses.activate
+def test_not_found_without_branch_raises_repository_not_found(client):
+    responses.get(COMMITS_URL, status=404, json={"message": "Not Found"})
+
+    with pytest.raises(RepositoryNotFoundError) as caught:
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert caught.value.status_code == 404
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_not_found_with_existing_repository_raises_branch_not_found(client):
+    responses.get(COMMITS_URL, status=404, json={"message": "Not Found"})
+    responses.get(REPO_URL, json={"full_name": "octo/hello"})
+
+    with pytest.raises(BranchNotFoundError, match="nope"):
+        list(client.iter_commits("octo/hello", SINCE, UNTIL, branch="nope"))
+
+
+@responses.activate
+def test_not_found_with_branch_and_missing_repository_raises_repository_not_found(client):
+    responses.get(COMMITS_URL, status=404, json={"message": "Not Found"})
+    responses.get(REPO_URL, status=404, json={"message": "Not Found"})
+
+    with pytest.raises(RepositoryNotFoundError):
+        list(client.iter_commits("octo/hello", SINCE, UNTIL, branch="main"))
+
+
+@responses.activate
+def test_empty_repository_yields_no_commits(client):
+    responses.get(
+        COMMITS_URL, status=409, json={"message": "Git Repository is empty."}
+    )
+
+    assert not list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+
+@pytest.mark.parametrize("status", [403, 429])
+@responses.activate
+def test_exhausted_rate_limit_raises_rate_limit_error(client, status):
+    responses.get(
+        COMMITS_URL,
+        status=status,
+        json={"message": "API rate limit exceeded"},
+        headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1767225600"},
+    )
+
+    with pytest.raises(RateLimitError) as caught:
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert caught.value.status_code == status
+    assert caught.value.reset_at == datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+@responses.activate
+def test_rate_limit_without_reset_header_has_no_reset_time(client):
+    responses.get(COMMITS_URL, status=403, headers={"X-RateLimit-Remaining": "0"})
+
+    with pytest.raises(RateLimitError) as caught:
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert caught.value.reset_at is None
+
+
+@responses.activate
+def test_forbidden_without_exhausted_rate_limit_raises_generic_error(client):
+    responses.get(
+        COMMITS_URL,
+        status=403,
+        json={"message": "Resource not accessible"},
+        headers={"X-RateLimit-Remaining": "42"},
+    )
+
+    with pytest.raises(GitHubError) as caught:
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert caught.type is GitHubError  # not a subclass such as RateLimitError
+    assert caught.value.status_code == 403
+
+
+@responses.activate
+def test_server_error_raises_generic_error(client):
+    responses.get(COMMITS_URL, status=500)
+
+    with pytest.raises(GitHubError, match="500") as caught:
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert caught.value.status_code == 500
+
+
+@pytest.mark.parametrize("failure", [
+    requests.ConnectionError("connection refused"),
+    requests.Timeout("read timed out"),
+])
+@responses.activate
+def test_connection_problem_raises_network_error(client, failure):
+    responses.get(COMMITS_URL, body=failure)
+
+    with pytest.raises(NetworkError) as caught:
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert caught.value.status_code is None
+    assert caught.value.__cause__ is failure
+
+
+@responses.activate
+def test_error_on_later_page_is_raised_after_earlier_commits(client):
+    responses.get(
+        COMMITS_URL,
+        json=[api_commit(sha="a1")],
+        headers=link_header(page_url(2, **FIRST_PAGE_QUERY)),
+        match=[matchers.query_param_matcher(FIRST_PAGE_QUERY)],
+    )
+    responses.get(
+        COMMITS_URL,
+        status=500,
+        match=[matchers.query_param_matcher({**FIRST_PAGE_QUERY, "page": "2"})],
+    )
+    commits = client.iter_commits("octo/hello", SINCE, UNTIL)
+
+    assert next(commits).sha == "a1"
+    with pytest.raises(GitHubError):
+        next(commits)
 
 
 def test_read_token_from_environment(monkeypatch):
