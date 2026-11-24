@@ -36,7 +36,7 @@ MAX_RATE_LIMIT_WAITS = 3
 RATE_LIMIT_MARGIN_SECONDS = 1
 
 # Transient failures (connection errors, timeouts, 5xx) are retried by urllib3
-# with exponential backoff: 0.5 s, 1 s, 2 s.
+# with exponential backoff: immediately, then after 1 s and 2 s.
 TRANSIENT_RETRIES = 3
 BACKOFF_FACTOR = 0.5
 RETRY_STATUSES = (500, 502, 503, 504)

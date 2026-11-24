@@ -76,7 +76,7 @@ pip install -e .
 
 ```bash
 docker compose build
-docker compose run --rm app django/django --since 2025-01-01 --until 2025-01-31
+docker compose run --rm app django/django --since 2026-01-01 --until 2026-01-31
 ```
 
 - **Token:** zet `GITHUB_TOKEN` in een `.env`-bestand naast `docker-compose.yml`. Compose geeft het mee bij het starten van de container; het komt nooit in het image (`.dockerignore` sluit `.env` uit). Zonder `.env` werkt het ook, met de lagere limiet.
@@ -102,11 +102,35 @@ github-commits REPOSITORY --since DATUM --until DATUM [opties]
 Voorbeelden:
 
 ```bash
-# Commits op de main-branch van CPython in januari 2025
+# Commits op de main-branch van Django in september en oktober 2026
 github-commits django/django --since 2026-09-01 --until 2026-10-31 --branch main
 
 # Output als JSON, bijvoorbeeld om verder te verwerken met jq
 github-commits django/django --since 2026-09-01 --until 2026-10-31 --format json | jq '.[0]'
+```
+
+Zo ziet de tekstoutput eruit:
+
+```console
+$ github-commits octocat/Hello-World --since 2011-01-01 --until 2012-12-31
+octocat/Hello-World, 2011-01-01 to 2012-12-31 (default branch)
+3 commits by 3 authors
+
+cameronmcefee (@Cameron423698) <cameron@github.com>: 1 commit
+  - first commit
+
+Johnneylee Jack Rollins (@Spaceghost) <Johnneylee.rollins@gmail.com>: 1 commit
+  - New line at end of file. --Signed off by Spaceghost
+
+The Octocat (@octocat) <octocat@nowhere.com>: 1 commit
+  - Merge pull request #6 from Spaceghost/patch-1
+```
+
+Per auteur staat alleen de eerste regel van elk commit-bericht; `--format json` geeft de volledige berichten. Foutmeldingen gaan naar stderr, met een exit code (zie hieronder):
+
+```console
+$ github-commits octocat/bestaat-niet --since 2026-10-01 --until 2026-10-31
+github-commits: error: Repository 'octocat/bestaat-niet' not found or not accessible.
 ```
 
 ### Exit codes
@@ -115,7 +139,7 @@ github-commits django/django --since 2026-09-01 --until 2026-10-31 --format json
 | --- | --- |
 | `0` | Gelukt |
 | `1` | Fout bij de GitHub API (authenticatie, niet gevonden, rate limit, netwerk) |
-| `2` | Ongeldige invoer (bijv. verkeerd datumformaat of `--until` vóór `--since`) |
+| `2` | Ongeldige invoer (bijv. verkeerd datumformaat, `--until` vóór `--since` of een ongeldige repositorynaam) |
 
 ## Configuratie
 
@@ -173,6 +197,7 @@ De client bestaat uit drie gescheiden lagen: netwerk, domeinlogica en presentati
 
 ```text
 src/gh_commits/
+├── __main__.py   # Maakt `python -m gh_commits` mogelijk
 ├── cli.py        # Presentatie: argumenten parsen, invoer valideren, output, exit codes
 ├── client.py     # Netwerk: GitHubClient met authenticatie, paginatie en retries
 ├── cache.py      # Opbouw van de gecachte HTTP-sessie
@@ -193,11 +218,13 @@ cli ──> client ──> GitHub API
 
 **De HTTP-sessie als dependency.** `GitHubClient` maakt zijn sessie niet zelf aan, maar krijgt hem mee. Daardoor zijn caching en tests in te pluggen zonder de client aan te passen.
 
-**Caching met `requests-cache`.** Dit is een standaardoplossing die transparant onder `requests` werkt. Het gebruikt conditional requests (ETag): een `304 Not Modified`-antwoord telt bij GitHub niet mee voor de rate limit.
+**Lagenscheiding.** Elke laag heeft één taak (zie [Architectuur](#architectuur)). `grouping.py` en `models.py` doen geen I/O en zijn daardoor met gewone objecten te testen. Alleen `client.py` praat met GitHub, en alleen `cli.py` leest argumenten en schrijft naar stdout en stderr. De client vertaalt HTTP-fouten naar eigen exceptions (`errors.py`), zodat de CLI de exit code bepaalt zonder iets van HTTP te weten.
+
+**Caching met `requests-cache`.** Dit is een standaardoplossing die transparant onder `requests` werkt. Het gebruikt conditional requests (ETag): een `304 Not Modified`-antwoord telt bij GitHub niet mee voor de rate limit. Alleen geslaagde (`200`) antwoorden worden opgeslagen, dus fouten en rate limits worden nooit hergebruikt. De `Authorization`-header hoort niet bij de cache-sleutel en wordt niet opgeslagen, zodat de token niet op schijf komt.
 
 **Groeperen per auteur.** Het `author`-veld van GitHub (de login) is `null` als het e-mailadres van een commit niet aan een account gekoppeld is. De client groepeert daarom op login als die bekend is, en anders op de naam en het e-mailadres uit de commit zelf.
 
-**Datumbereik.** Beide datums zijn inclusief en worden in UTC geïnterpreteerd. `--until 2026-10-31` betekent dus tot en met 31 januari 23:59:59 UTC.
+**Datumbereik.** Beide datums zijn inclusief en worden in UTC geïnterpreteerd. `--until 2026-10-31` betekent dus tot en met 31 oktober 23:59:59 UTC.
 
 **Foutafhandeling en retries.**
 
@@ -209,6 +236,12 @@ cli ──> client ──> GitHub API
 | `401` | `AuthenticationError`: token ongeldig of verlopen |
 | `404` | `RepositoryNotFoundError` of `BranchNotFoundError` |
 | `409` | Lege repository: geen commits |
+
+De getallen achter de retry-strategie:
+
+- **Rate limits** (`403` of `429`): de client wacht maximaal 5 minuten per keer (plus 1 seconde marge) en probeert hetzelfde request hooguit 3 keer opnieuw. Langer wachten zou de CLI onverwacht lang laten hangen; dan stopt hij liever met een melding wanneer de limiet weer vrij is.
+- **Tijdelijke fouten** (`500`, `502`, `503`, `504`, verbindingsfouten en timeouts van 10 seconden): 3 nieuwe pogingen: direct, na 1 en na 2 seconden. Rate limits vallen hier bewust niet onder, omdat de client daarvoor zelf de wachttijd begrenst.
+- **Branch of repository bij een `404`:** GitHub geeft dezelfde `404` voor een onbekende repository en een onbekende branch. De client vraagt dan de repository zelf op om te bepalen welke van de twee het is.
 
 ## Ontwikkeling
 
@@ -269,4 +302,4 @@ GitHub Actions (`.github/workflows/ci.yml`) draait bij elke push en pull request
 - [x] CLI
 - [x] Integratietests
 - [x] Docker
-- [ ] Documentatie en afronding
+- [x] Documentatie en afronding
