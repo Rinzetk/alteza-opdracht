@@ -1,0 +1,149 @@
+"""Tests for the GitHub API client. HTTP calls are mocked with `responses`."""
+
+from datetime import datetime, timezone
+
+import pytest
+import requests
+import responses
+from responses import matchers
+
+from gh_commits.client import GitHubClient, read_token
+from gh_commits.models import Commit
+
+COMMITS_URL = "https://api.github.com/repos/octo/hello/commits"
+SINCE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+UNTIL = datetime(2026, 1, 31, 23, 59, 59, tzinfo=timezone.utc)
+
+
+def api_commit(sha="abc123", name="Ada Lovelace", email="ada@example.com",
+               login="ada", date="2026-01-15T12:00:00Z", message="First commit"):
+    """Build one commit as it appears in the GitHub API response."""
+    return {
+        "sha": sha,
+        "commit": {
+            "author": {"name": name, "email": email, "date": date},
+            "message": message,
+        },
+        "author": {"login": login} if login else None,
+    }
+
+
+@pytest.fixture(name="client")
+def fixture_client():
+    return GitHubClient(requests.Session())
+
+
+@responses.activate
+def test_converts_json_to_commit_objects(client):
+    responses.get(COMMITS_URL, json=[api_commit()])
+
+    result = client.get_commits_page("octo/hello", SINCE, UNTIL)
+
+    assert result == [
+        Commit(
+            sha="abc123",
+            author_name="Ada Lovelace",
+            author_email="ada@example.com",
+            author_login="ada",
+            date=datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc),
+            message="First commit",
+        )
+    ]
+
+
+@responses.activate
+def test_commit_without_github_account_has_no_login(client):
+    responses.get(COMMITS_URL, json=[api_commit(login=None)])
+
+    result = client.get_commits_page("octo/hello", SINCE, UNTIL)
+
+    assert result[0].author_login is None
+
+
+@responses.activate
+def test_empty_page_returns_empty_list(client):
+    responses.get(COMMITS_URL, json=[])
+
+    assert not client.get_commits_page("octo/hello", SINCE, UNTIL)
+
+
+@responses.activate
+def test_sends_branch_date_range_and_page_size(client):
+    responses.get(
+        COMMITS_URL,
+        json=[],
+        match=[matchers.query_param_matcher({
+            "sha": "main",
+            "since": "2026-01-01T00:00:00Z",
+            "until": "2026-01-31T23:59:59Z",
+            "per_page": "100",
+        })],
+    )
+
+    client.get_commits_page("octo/hello", SINCE, UNTIL, branch="main")
+
+
+@responses.activate
+def test_without_branch_sends_no_sha(client):
+    responses.get(
+        COMMITS_URL,
+        json=[],
+        match=[matchers.query_param_matcher({
+            "since": "2026-01-01T00:00:00Z",
+            "until": "2026-01-31T23:59:59Z",
+            "per_page": "100",
+        })],
+    )
+
+    client.get_commits_page("octo/hello", SINCE, UNTIL)
+
+
+@responses.activate
+def test_sends_token_as_authorization_header():
+    responses.get(
+        COMMITS_URL,
+        json=[],
+        match=[matchers.header_matcher({"Authorization": "Bearer secret-token"})],
+    )
+
+    GitHubClient(requests.Session(), token="secret-token").get_commits_page(
+        "octo/hello", SINCE, UNTIL
+    )
+
+
+@responses.activate
+def test_without_token_sends_no_authorization_header(client):
+    responses.get(COMMITS_URL, json=[])
+
+    client.get_commits_page("octo/hello", SINCE, UNTIL)
+
+    assert "Authorization" not in responses.calls[0].request.headers
+
+
+@responses.activate
+def test_uses_the_injected_session():
+    session = requests.Session()
+    session.headers["X-Test"] = "injected"
+    responses.get(COMMITS_URL, json=[])
+
+    GitHubClient(session).get_commits_page("octo/hello", SINCE, UNTIL)
+
+    assert responses.calls[0].request.headers["X-Test"] == "injected"
+
+
+def test_read_token_from_environment(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
+
+    assert read_token() == "secret-token"
+
+
+def test_read_token_missing_returns_none(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    assert read_token() is None
+
+
+def test_read_token_empty_returns_none(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "")
+
+    assert read_token() is None
