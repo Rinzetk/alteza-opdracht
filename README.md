@@ -1,6 +1,6 @@
 # Github Commits
 
-[![CI](https://github.com/<gebruiker>/github-commits/actions/workflows/ci.yml/badge.svg)](https://github.com/<gebruiker>/github-commits/actions/workflows/ci.yml)
+[![CI](https://github.com/Rinzetk/alteza-opdracht/actions/workflows/ci.yml/badge.svg)](https://github.com/Rinzetk/alteza-opdracht/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 
 Een command-line client die via de GitHub REST API de commits van een publieke repository ophaalt binnen een tijdsbestek, en ze groepeert per auteur.

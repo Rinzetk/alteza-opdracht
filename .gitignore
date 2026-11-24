@@ -10,6 +10,12 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 # Build / packaging
 build/
 dist/
