@@ -1,0 +1,31 @@
+# docker compose run --rm app django/django --since 2025-01-01 --until 2025-01-31
+# docker compose run --rm test
+#
+# Settings such as GITHUB_TOKEN come from an optional .env file next to this
+# file (see .env.example). They are passed in when the container starts and
+# are never part of the image.
+
+services:
+  app:
+    build:
+      context: .
+      target: runtime
+    image: github-commits:latest
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - cache:/home/app/.cache/github-commits
+
+  test:
+    build:
+      context: .
+      target: test
+    image: github-commits:test
+    # With GITHUB_TOKEN in .env the live tests run as well.
+    env_file:
+      - path: .env
+        required: false
+
+volumes:
+  cache:

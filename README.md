@@ -6,7 +6,7 @@
 Een command-line client die via de GitHub REST API de commits van een publieke repository ophaalt binnen een tijdsbestek, en ze groepeert per auteur.
 
 ```console
-$ gh-commits django/django --since 2026-09-01 --until 2026-10-31 --branch main
+$ github-commits django/django --since 2026-09-01 --until 2026-10-31 --branch main
 ```
 
 ## Inhoud
@@ -79,12 +79,14 @@ docker compose build
 docker compose run --rm app django/django --since 2025-01-01 --until 2025-01-31
 ```
 
-De cache wordt bewaard in een Docker-volume, zodat hij tussen runs behouden blijft.
+- **Token:** zet `GITHUB_TOKEN` in een `.env`-bestand naast `docker-compose.yml`. Compose geeft het mee bij het starten van de container; het komt nooit in het image (`.dockerignore` sluit `.env` uit). Zonder `.env` werkt het ook, met de lagere limiet.
+- **Cache:** de cache staat in het Docker-volume `cache`, zodat hij tussen runs behouden blijft. Legen kan met `--clear-cache` of met `docker compose down -v`.
+- **Image:** gebaseerd op `python:3.12-slim` en draait als non-root user `app`. De dependencies worden vóór de broncode geïnstalleerd, zodat die laag uit de cache komt zolang `requirements*.txt` niet verandert.
 
 ## Gebruik
 
 ```text
-gh-commits REPOSITORY --since DATUM --until DATUM [opties]
+github-commits REPOSITORY --since DATUM --until DATUM [opties]
 ```
 
 | Argument | Verplicht | Beschrijving |
@@ -101,10 +103,10 @@ Voorbeelden:
 
 ```bash
 # Commits op de main-branch van CPython in januari 2025
-gh-commits django/django --since 2026-09-01 --until 2026-10-31 --branch main
+github-commits django/django --since 2026-09-01 --until 2026-10-31 --branch main
 
 # Output als JSON, bijvoorbeeld om verder te verwerken met jq
-gh-commits django/django --since 2026-09-01 --until 2026-10-31 --format json | jq '.[0]'
+github-commits django/django --since 2026-09-01 --until 2026-10-31 --format json | jq '.[0]'
 ```
 
 ### Exit codes
@@ -120,10 +122,50 @@ gh-commits django/django --since 2026-09-01 --until 2026-10-31 --format json | j
 | Omgevingsvariabele | Standaard | Beschrijving |
 | --- | --- | --- |
 | `GITHUB_TOKEN` | — | Personal access token. Optioneel, maar verhoogt de limiet van 60 naar 5000 requests per uur. |
-| `GH_COMMITS_CACHE_PATH` | `~/.cache/gh-commits` | Locatie van de cache-database |
+| `GH_COMMITS_CACHE_PATH` | `~/.cache/github-commits` | Locatie van de cache-database |
 | `GH_COMMITS_CACHE_TTL` | `3600` | Hoe lang een response geldig blijft (seconden) |
 
-Voor Docker kun je deze waarden in een `.env`-bestand zetten (zie `.env.example`).
+Alle variabelen zijn optioneel. Zonder token werkt de client ook, met de lagere limiet.
+
+### Waar de variabelen vandaan komen
+
+| Manier van draaien | Bron | Wordt `.env` gelezen? |
+| --- | --- | --- |
+| Docker Compose (`app` en `test`) | Het `.env`-bestand naast `docker-compose.yml` | Ja, als het bestaat |
+| Lokaal (`github-commits`, `pytest`) | De omgeving van je shell | Nee |
+| CI (GitHub Actions) | Het automatische `secrets.GITHUB_TOKEN` | Nee |
+
+De client leest alleen omgevingsvariabelen en laadt zelf geen `.env`-bestand. Buiten Docker zet je ze dus in je shell.
+
+### Met Docker: een `.env`-bestand
+
+```bash
+cp .env.example .env
+```
+
+Vul daarna `GITHUB_TOKEN=` in. Docker Compose geeft de waarden mee bij het starten van de container:
+
+- `.env` staat in `.gitignore` en `.dockerignore`: het komt nooit in git of in het image.
+- `GH_COMMITS_CACHE_PATH` laat je in Docker leeg; de cache staat daar in het volume `cache`.
+- Met een token in `.env` draaien ook de live tests mee in `docker compose run --rm test`.
+
+### Lokaal: in je shell
+
+```bash
+# bash / zsh
+export GITHUB_TOKEN=ghp_...
+github-commits python/cpython --since 2026-01-01 --until 2026-01-31
+
+# fish
+set -x GITHUB_TOKEN ghp_...
+
+# alleen voor één commando
+env GITHUB_TOKEN=ghp_... github-commits python/cpython --since 2026-01-01 --until 2026-01-31
+```
+
+### Een token aanmaken
+
+Maak op GitHub een *fine-grained personal access token* aan (Settings → Developer settings → Personal access tokens). Voor publieke repositories zijn geen extra rechten nodig. De token wordt alleen in de `Authorization`-header naar GitHub gestuurd; hij komt niet in de cache, de output of de logs.
 
 ## Architectuur
 
@@ -212,7 +254,7 @@ GitHub Actions (`.github/workflows/ci.yml`) draait bij elke push en pull request
 
 1. Linting met flake8 en pylint
 2. Tests met coverage, inclusief de live tests (met het automatische `secrets.GITHUB_TOKEN`); het coverage-rapport staat in de samenvatting van elke run
-3. Bouwen van het Docker-image
+3. Bouwen van de Docker-images, controleren dat de CLI als non-root user start, en de tests in de container draaien
 
 ## Roadmap
 
@@ -226,5 +268,5 @@ GitHub Actions (`.github/workflows/ci.yml`) draait bij elke push en pull request
 - [x] Caching
 - [x] CLI
 - [x] Integratietests
-- [ ] Docker
+- [x] Docker
 - [ ] Documentatie en afronding

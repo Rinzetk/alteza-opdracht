@@ -1,0 +1,29 @@
+# Only what the image needs goes into the build context.
+# .env must never end up in an image: the token is passed in at run time.
+.env
+.env.*
+!.env.example
+
+.git
+.github
+.claude
+.venv
+venv
+env
+
+__pycache__
+*.py[cod]
+*.egg-info
+build
+dist
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+.coverage.*
+htmlcov
+coverage.xml
+
+Dockerfile
+docker-compose.yml
+.dockerignore
