@@ -2,11 +2,15 @@
 
 import os
 import re
-from collections.abc import Iterator
+import time as time_module
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from typing import Any, NoReturn
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from gh_commits.errors import (
     AuthenticationError,
@@ -24,6 +28,19 @@ PER_PAGE = 100
 TIMEOUT_SECONDS = 10
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
+# Rate limiting: wait at most this long (seconds) for a limit to reset, and
+# give up after this many waits for the same request. The margin guards
+# against small clock differences between us and GitHub.
+DEFAULT_MAX_WAIT_SECONDS = 300
+MAX_RATE_LIMIT_WAITS = 3
+RATE_LIMIT_MARGIN_SECONDS = 1
+
+# Transient failures (connection errors, timeouts, 5xx) are retried by urllib3
+# with exponential backoff: 0.5 s, 1 s, 2 s.
+TRANSIENT_RETRIES = 3
+BACKOFF_FACTOR = 0.5
+RETRY_STATUSES = (500, 502, 503, 504)
+
 # GitHub rules: an owner has letters, digits and hyphens (at most 39);
 # a repository name has letters, digits, ".", "_" and "-" (at most 100).
 REPO_NAME_PATTERN = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
@@ -35,12 +52,48 @@ HTTP_CONFLICT = 409
 HTTP_TOO_MANY_REQUESTS = 429
 
 
+@dataclass(frozen=True)
+class RateLimitPolicy:
+    """How GitHubClient deals with an exhausted rate limit.
+
+    The client waits until the limit resets and tries again, unless that
+    would take longer than `max_wait` seconds. `sleep` and `clock` are
+    injectable so tests do not have to wait.
+    """
+
+    max_wait: float = DEFAULT_MAX_WAIT_SECONDS
+    sleep: Callable[[float], None] = time_module.sleep
+    clock: Callable[[], float] = time_module.time
+
+
 def read_token() -> str | None:
     """Read the personal access token from GITHUB_TOKEN; None if it is unset or empty.
 
     Without a token GitHub allows 60 requests per hour, with a token 5000.
     """
     return os.environ.get("GITHUB_TOKEN") or None
+
+
+def mount_retries(session: requests.Session) -> requests.Session:
+    """Make `session` retry connection errors, timeouts and 5xx responses.
+
+    Retries use exponential backoff. Rate limits (403/429) are deliberately
+    left to GitHubClient, which caps how long it waits. When the retries are
+    used up, the last 5xx response is returned instead of raising, so the
+    client can turn it into a GitHubError. Returns the same session.
+    """
+    retry = Retry(
+        total=TRANSIENT_RETRIES,
+        backoff_factor=BACKOFF_FACTOR,
+        status_forcelist=RETRY_STATUSES,
+        allowed_methods=frozenset({"GET"}),
+        respect_retry_after_header=False,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
 def _validate_repo_name(repo: str) -> None:
@@ -86,17 +139,36 @@ def _parse_commit(item: dict[str, Any]) -> Commit:
 
 
 def _is_rate_limited(response: requests.Response) -> bool:
-    """Tell whether a 403/429 response means the rate limit is exhausted."""
+    """Tell whether a 403/429 response is a primary or secondary rate limit.
+
+    A primary limit has X-RateLimit-Remaining: 0; a secondary limit has a
+    Retry-After header.
+    """
     return (response.status_code in (HTTP_FORBIDDEN, HTTP_TOO_MANY_REQUESTS)
-            and response.headers.get("X-RateLimit-Remaining") == "0")
+            and ("Retry-After" in response.headers
+                 or response.headers.get("X-RateLimit-Remaining") == "0"))
 
 
-def _rate_limit_error(response: requests.Response) -> RateLimitError:
-    """Build a RateLimitError, with the reset time from X-RateLimit-Reset if present."""
-    reset_header = response.headers.get("X-RateLimit-Reset", "")
-    if not reset_header.isdigit():
+def _retry_at(response: requests.Response, now: float) -> float | None:
+    """Return when (epoch seconds) a rate-limited request may be retried.
+
+    Retry-After (secondary limit) takes precedence over X-RateLimit-Reset
+    (primary limit). None if GitHub gave neither.
+    """
+    retry_after = response.headers.get("Retry-After", "")
+    if retry_after.isdigit():
+        return now + int(retry_after)
+    reset = response.headers.get("X-RateLimit-Reset", "")
+    if reset.isdigit():
+        return int(reset)
+    return None
+
+
+def _rate_limit_error(response: requests.Response, retry_at: float | None) -> RateLimitError:
+    """Build a RateLimitError, with the reset time if it is known."""
+    if retry_at is None:
         return RateLimitError("GitHub API rate limit exceeded.", response.status_code)
-    reset_at = datetime.fromtimestamp(int(reset_header), tz=timezone.utc)
+    reset_at = datetime.fromtimestamp(retry_at, tz=timezone.utc)
     return RateLimitError(
         f"GitHub API rate limit exceeded; it resets at {reset_at:%Y-%m-%d %H:%M:%S} UTC.",
         response.status_code,
@@ -110,13 +182,17 @@ class GitHubClient:  # pylint: disable=too-few-public-methods
     """Fetches commits from the GitHub REST API.
 
     The HTTP session is passed in rather than created here, so callers can
-    plug in caching or a test double without changing the client.
+    plug in caching, retries (see mount_retries) or a test double without
+    changing the client. How rate limits are waited out is set by
+    `rate_limit` (see RateLimitPolicy).
     """
 
     def __init__(self, session: requests.Session, token: str | None = None,
-                 base_url: str = API_URL):
+                 base_url: str = API_URL, *,
+                 rate_limit: RateLimitPolicy = RateLimitPolicy()):
         self._session = session
         self._base_url = base_url
+        self._rate_limit = rate_limit
         self._headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
@@ -163,7 +239,29 @@ class GitHubClient:  # pylint: disable=too-few-public-methods
             query = None  # the next URL already contains the query
 
     def _get(self, url: str, params: dict[str, str | int] | None = None) -> requests.Response:
-        """Send a GET request; translate connection problems into a NetworkError."""
+        """Send a GET request, waiting out rate limits within `max_wait`.
+
+        Raises RateLimitError when the wait is unknown or longer than the
+        policy's `max_wait`, or when the limit is still hit after MAX_RATE_LIMIT_WAITS
+        waits.
+        """
+        waits = 0
+        while True:
+            response = self._send(url, params)
+            if not _is_rate_limited(response):
+                return response
+            now = self._rate_limit.clock()
+            retry_at = _retry_at(response, now)
+            if retry_at is None or waits == MAX_RATE_LIMIT_WAITS:
+                raise _rate_limit_error(response, retry_at)
+            wait = max(retry_at - now, 0) + RATE_LIMIT_MARGIN_SECONDS
+            if wait > self._rate_limit.max_wait:
+                raise _rate_limit_error(response, retry_at)
+            self._rate_limit.sleep(wait)
+            waits += 1
+
+    def _send(self, url: str, params: dict[str, str | int] | None) -> requests.Response:
+        """Send one GET request; translate connection problems into a NetworkError."""
         try:
             return self._session.get(
                 url,
@@ -182,8 +280,6 @@ class GitHubClient:  # pylint: disable=too-few-public-methods
             raise AuthenticationError(
                 "GitHub rejected the token: it is invalid or expired.", status
             )
-        if _is_rate_limited(response):
-            raise _rate_limit_error(response)
         if status == HTTP_NOT_FOUND:
             # GitHub answers the same 404 for a missing repository and a
             # missing branch, so check the repository to tell them apart.

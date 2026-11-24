@@ -215,7 +215,7 @@ GitHub Actions (`.github/workflows/ci.yml`) draait bij elke push en pull request
 - [x] Basis-API-client
 - [x] Paginatie, datumbereik en branch
 - [x] Foutafhandeling
-- [ ] Rate limiting en retries
+- [x] Rate limiting en retries
 - [ ] Caching
 - [ ] CLI
 - [ ] Integratietests

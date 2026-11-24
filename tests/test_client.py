@@ -7,7 +7,7 @@ import requests
 import responses
 from responses import matchers
 
-from gh_commits.client import GitHubClient, read_token
+from gh_commits.client import GitHubClient, RateLimitPolicy, mount_retries, read_token
 from gh_commits.errors import (
     AuthenticationError,
     BranchNotFoundError,
@@ -28,6 +28,7 @@ FIRST_PAGE_QUERY = {
     "until": "2026-01-31T23:59:59Z",
     "per_page": "100",
 }
+NOW = 1767222000  # the fixed clock: 2025-12-31 23:00:00 UTC
 
 
 def api_commit(sha="abc123", name="Ada Lovelace", email="ada@example.com",
@@ -67,9 +68,26 @@ def register_pages(pages, query):
         )
 
 
+def rate_limited(status=403, **headers):
+    """Register one rate-limited response with the given headers."""
+    responses.get(COMMITS_URL, status=status, json={"message": "rate limit"},
+                  headers=headers)
+
+
+@pytest.fixture(name="sleeps")
+def fixture_sleeps():
+    """The wait times the client asked for, instead of really sleeping."""
+    return []
+
+
+@pytest.fixture(name="policy")
+def fixture_policy(sleeps):
+    return RateLimitPolicy(sleep=sleeps.append, clock=lambda: NOW)
+
+
 @pytest.fixture(name="client")
-def fixture_client():
-    return GitHubClient(requests.Session())
+def fixture_client(policy):
+    return GitHubClient(requests.Session(), rate_limit=policy)
 
 
 @responses.activate
@@ -312,13 +330,153 @@ def test_exhausted_rate_limit_raises_rate_limit_error(client, status):
 
 
 @responses.activate
-def test_rate_limit_without_reset_header_has_no_reset_time(client):
+def test_rate_limit_without_reset_header_has_no_reset_time(client, sleeps):
     responses.get(COMMITS_URL, status=403, headers={"X-RateLimit-Remaining": "0"})
 
     with pytest.raises(RateLimitError) as caught:
         list(client.iter_commits("octo/hello", SINCE, UNTIL))
 
     assert caught.value.reset_at is None
+    assert not sleeps
+
+
+@responses.activate
+def test_primary_rate_limit_waits_until_reset_then_retries(client, sleeps):
+    rate_limited(**{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(NOW + 60)})
+    responses.get(COMMITS_URL, json=[api_commit(sha="a1")])
+
+    result = list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert [commit.sha for commit in result] == ["a1"]
+    assert sleeps == [61]  # until the reset, plus one second of margin
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_primary_rate_limit_with_reset_in_the_past_waits_only_the_margin(client, sleeps):
+    rate_limited(**{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(NOW - 100)})
+    responses.get(COMMITS_URL, json=[])
+
+    list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert sleeps == [1]
+
+
+@pytest.mark.parametrize("status", [403, 429])
+@responses.activate
+def test_secondary_rate_limit_respects_retry_after(client, sleeps, status):
+    rate_limited(status, **{"Retry-After": "30"})
+    responses.get(COMMITS_URL, json=[api_commit(sha="a1")])
+
+    result = list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert [commit.sha for commit in result] == ["a1"]
+    assert sleeps == [31]
+
+
+@responses.activate
+def test_retry_after_takes_precedence_over_reset(client, sleeps):
+    rate_limited(**{"Retry-After": "30", "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(NOW + 200)})
+    responses.get(COMMITS_URL, json=[])
+
+    list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert sleeps == [31]
+
+
+@responses.activate
+def test_reset_later_than_max_wait_raises_without_waiting(client, sleeps):
+    rate_limited(**{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(NOW + 3600)})
+
+    with pytest.raises(RateLimitError) as caught:
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert caught.value.reset_at == datetime.fromtimestamp(NOW + 3600, tz=timezone.utc)
+    assert not sleeps
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_retry_after_longer_than_max_wait_raises_without_waiting(client, sleeps):
+    rate_limited(429, **{"Retry-After": "600"})
+
+    with pytest.raises(RateLimitError) as caught:
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert caught.value.reset_at == datetime.fromtimestamp(NOW + 600, tz=timezone.utc)
+    assert not sleeps
+
+
+@responses.activate
+def test_max_wait_is_configurable(sleeps):
+    policy = RateLimitPolicy(max_wait=10, sleep=sleeps.append, clock=lambda: NOW)
+    client = GitHubClient(requests.Session(), rate_limit=policy)
+    rate_limited(**{"Retry-After": "30"})
+
+    with pytest.raises(RateLimitError):
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert not sleeps
+
+
+@responses.activate
+def test_gives_up_when_rate_limit_persists_after_max_waits(client, sleeps):
+    rate_limited(**{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(NOW + 10)})
+
+    with pytest.raises(RateLimitError):
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert sleeps == [11, 11, 11]
+    assert len(responses.calls) == 4
+
+
+@responses.activate
+def test_mounted_retries_recover_from_a_server_error(policy):
+    client = GitHubClient(mount_retries(requests.Session()), rate_limit=policy)
+    responses.get(COMMITS_URL, status=503)
+    responses.get(COMMITS_URL, json=[api_commit(sha="a1")])
+
+    result = list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert [commit.sha for commit in result] == ["a1"]
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_mounted_retries_give_up_on_a_persistent_server_error(policy):
+    client = GitHubClient(mount_retries(requests.Session()), rate_limit=policy)
+    responses.get(COMMITS_URL, status=500)
+
+    with pytest.raises(GitHubError) as caught:
+        list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert caught.value.status_code == 500
+    assert len(responses.calls) == 4  # the first try and three retries
+
+
+@responses.activate
+def test_mounted_retries_leave_rate_limits_to_the_client(policy, sleeps):
+    client = GitHubClient(mount_retries(requests.Session()), rate_limit=policy)
+    rate_limited(429, **{"Retry-After": "5"})
+    responses.get(COMMITS_URL, json=[])
+
+    list(client.iter_commits("octo/hello", SINCE, UNTIL))
+
+    assert sleeps == [6]  # waited by the client's policy, not by urllib3
+    assert len(responses.calls) == 2
+
+
+def test_mount_retries_configures_backoff_for_connection_problems():
+    # `responses` cannot simulate a retried connection error, so check the
+    # configuration that urllib3 uses for it.
+    session = requests.Session()
+
+    assert mount_retries(session) is session
+    retry = session.get_adapter("https://api.github.com").max_retries
+    assert retry.total == 3
+    assert retry.backoff_factor > 0
+    assert retry.allowed_methods == frozenset({"GET"})
 
 
 @responses.activate
