@@ -19,6 +19,7 @@ DEFAULT_CACHE_DIR = Path("~/.cache/gh-commits")
 DEFAULT_EXPIRE_AFTER_SECONDS = 3600
 CACHE_FILE_NAME = "http_cache.sqlite"
 
+
 def cache_dir_from_env() -> Path:
     """Return the cache directory from GH_COMMITS_CACHE_PATH, or the default."""
     return Path(os.environ.get(CACHE_DIR_VARIABLE) or DEFAULT_CACHE_DIR).expanduser()
