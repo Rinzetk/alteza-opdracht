@@ -36,7 +36,8 @@ functionaliteit, de architectuur en de roadmap.
 
 - Python 3.12+; de code staat in `src/gh_commits/` (src-layout), de tests in `tests/`.
 - Alle configuratie (dependencies, pytest, coverage, flake8, pylint) staat in `pyproject.toml`.
-- Documentatie, docstrings en commitberichten zijn in het Nederlands.
+- Code is in het Engels: namen, docstrings, comments en testdata.
+- Documentatie (README) en commitberichten zijn voorlopig in het Nederlands.
 
 ## Commando's
 
